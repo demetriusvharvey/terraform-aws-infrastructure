@@ -2,14 +2,24 @@ provider "aws" {
   region = var.region
 }
 
-resource "aws_instance" "demo" {
-  ami           = "ami-0c02fb55956c7d316" # Amazon Linux 2 (us-east-1)
+data "aws_ami" "amazon_linux_2" {
+  most_recent = true
+  owners      = ["137112412989"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+
+
+
+module "ec2" {
+  source = "./modules/ec2"
+
+  ami_id        = data.aws_ami.amazon_linux_2.id
   instance_type = var.instance_type
   key_name      = var.key_name
-
-  tags = merge(local.common_tags,
-    {
-      Name = "terraform-demo-ec2"
-    }
-  )
+  name          = "terraform-demo-ec2"
+  tags          = local.common_tags
 }
