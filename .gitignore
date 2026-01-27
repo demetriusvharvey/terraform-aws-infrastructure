@@ -2,8 +2,8 @@
 .terraform/
 *.tfstate
 *.tfstate.*
-crash.log
 *.tfvars
+crash.log
 
 # OS / Editor
 .DS_Store
