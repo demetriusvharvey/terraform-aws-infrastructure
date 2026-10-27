@@ -1,133 +1,91 @@
-# Terraform AWS Infrastructure Project
+# AWS Multi-Environment Infrastructure with Terraform
 
-This project demonstrates a production-style Terraform setup on AWS using best practices, including remote state management, reusable modules, and multi-environment deployments.
+**Infrastructure as Code portfolio project** | AWS EC2 · Terraform · S3 remote state · DynamoDB locking · reusable modules
 
-The infrastructure provisions an EC2 instance using a reusable Terraform module and supports separate **dev** and **prod** environments with isolated state files.
+This repository implements an AWS EC2 provisioning pattern with a shared Terraform module, separate development and production configurations, and distinct remote-state keys. The goal is to show how infrastructure can be defined, reviewed, reproduced, and torn down through code rather than manual console changes.
 
----
+> **Scope:** This is a personal engineering project modeled after team infrastructure workflows—not a claim that it operates a production customer environment.
 
-## 🧱 Architecture Overview
-
-- **AWS EC2** – Compute resource
-- **Terraform Modules** – Reusable EC2 module
-- **Remote State (S3)** – Centralized Terraform state storage
-- **State Locking (DynamoDB)** – Prevents concurrent applies
-- **Multi-Environment** – Separate dev and prod deployments
-
----
-
-## 📁 Project Structure
+## Architecture
 
 ```text
-terraform-ec2-basic/
-├── bootstrap/                 # Creates S3 bucket + DynamoDB table
-│   ├── main.tf
-│   ├── variables.tf
-│   └── terraform.tfvars
-├── modules/
-│   └── ec2/
-│       ├── main.tf
-│       ├── variables.tf
-│       └── outputs.tf
-├── environments/
-│   ├── dev/
-│   │   ├── backend.tf
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   └── terraform.tfvars
-│   └── prod/
-│       ├── backend.tf
-│       ├── main.tf
-│       ├── variables.tf
-│       └── terraform.tfvars
-├── .gitignore
-└── README.md
+                       Terraform CLI
+                            |
+               +------------+------------+
+               |                         |
+         bootstrap/               environments/
+               |                 +-------+-------+
+               |                 |               |
+          S3 state bucket       dev/            prod/
+          DynamoDB lock         |                |
+               ^               module/ec2       module/ec2
+               |                 |                |
+        Separate state keys   EC2 (t3.micro)  EC2 (t3.medium)
+```
 
-How It Works
-1. Bootstrap (One-Time Setup)
+- `bootstrap/main.tf` creates a versioned S3 state bucket with AES-256 server-side encryption and public-access blocking, plus a pay-per-request DynamoDB lock table.
+- `modules/ec2/` provides a reusable EC2 resource with inputs for AMI, instance size, SSH key pair, name, and tags; outputs include the instance ID and public IP.
+- `environments/dev/` and `environments/prod/` reuse the same module with different size defaults and environment tags.
+- The remote backends use separate state paths: `env/dev/ec2/terraform.tfstate` and `env/prod/ec2/terraform.tfstate`.
 
-The bootstrap/ folder provisions:
+## Repository layout
 
-An S3 bucket for Terraform remote state
+```text
+bootstrap/               # S3 backend + DynamoDB table
+modules/ec2/             # Shared EC2 module
+environments/dev/        # Dev configuration and S3 backend
+environments/prod/       # Prod configuration and S3 backend
+main.tf                  # Standalone root configuration
+backend.tf               # Standalone root backend
+```
 
-A DynamoDB table for state locking
+## Deployment procedure
 
-This ensures Terraform state is centralized, versioned, and protected against concurrent modifications.
+**Prerequisites:** Terraform, AWS CLI with credentials authorized to create EC2/S3/DynamoDB resources, an existing EC2 key pair in `us-east-1`, and an AWS account with billing enabled.
 
-2. Terraform Module
+1. Review `bootstrap/terraform.tfvars` and replace the sample state-bucket name if unavailable. The backend bucket names in `backend.tf` and both environment backend files must match the bucket you actually create.
+2. Create the backend resources:
 
-The EC2 resource is defined in a reusable module:
+   ```bash
+   terraform -chdir=bootstrap init
+   terraform -chdir=bootstrap plan
+   terraform -chdir=bootstrap apply
+   ```
 
-Accepts inputs for AMI, instance type, key pair, and tags
+3. Initialize and plan the **dev** environment using an existing EC2 key pair:
 
-Outputs instance ID and public IP
+   ```bash
+   terraform -chdir=environments/dev init
+   terraform -chdir=environments/dev fmt -check
+   terraform -chdir=environments/dev validate
+   terraform -chdir=environments/dev plan -var="key_name=YOUR_EC2_KEY_PAIR"
+   terraform -chdir=environments/dev apply -var="key_name=YOUR_EC2_KEY_PAIR"
+   ```
 
-Designed to be environment-agnostic
+4. Repeat for `environments/prod` only if needed, after checking the instance size and cost.
+5. Tear down EC2 resources when finished: `terraform -chdir=environments/dev destroy -var="key_name=YOUR_EC2_KEY_PAIR"`. Do **not** destroy the bootstrap state bucket while environment states still depend on it.
 
-3. Multi-Environment Deployment
+No credentials or private keys should be committed. The Terraform configurations assume the operator supplies authorized AWS credentials through the normal AWS provider credential chain.
 
-Each environment (dev and prod) is its own Terraform root module:
+## What this demonstrates
 
-Separate backend configuration
+- **Build:** parameterized EC2 instances from one module, with separate environment configuration.
+- **Change control:** `fmt`, `validate`, `plan`, and human review before `apply`.
+- **State management:** remote S3 backends, distinct state paths, and DynamoDB-based locking as configured in this repository.
+- **Troubleshooting:** inspect `terraform plan` drift, verify `aws sts get-caller-identity`, check AMI availability, key-pair region, backend permissions, and EC2 state if a deployment fails.
+- **Cost discipline:** run `destroy` for unused test resources and review chargeable AWS services before provisioning.
 
-Separate state file in S3
+## Operational considerations and next improvements
 
-Environment-specific variables
+The current module does **not** create a dedicated VPC, security group, private subnet, load balancer, or application-monitoring stack. These are sensible future extensions, not capabilities claimed by this code.
 
-Same reusable EC2 module
+- Use a dedicated VPC and restricted security groups, IAM least privilege, and stronger automated policy checks.
+- Add pull-request CI for `terraform fmt`/`validate`/`plan`, along with reviewer approval before changes.
+- Consider modernizing Terraform state locking for supported Terraform versions after validating the backend migration.
+- **Repository hygiene:** an old `terraform.tfstate.backup` file is currently tracked in this repository despite `.gitignore` rules. Review it for sensitive data, remove it from Git/history if appropriate, and rotate any exposed secrets or keys. Adding an ignore rule does not untrack existing files.
 
-Environments
-Environment	Instance Type	State Path
-dev	t3.micro	env/dev/ec2/terraform.tfstate
-prod	t3.medium	env/prod/ec2/terraform.tfstate
-▶️ Usage
-Deploy Dev Environment
-cd environments/dev
-terraform init
-terraform plan
-terraform apply
+## Interview walkthrough
 
-Destroy Dev Environment
-terraform destroy
+Be ready to explain why reusable modules reduce duplicated configuration; how two environments stay isolated despite sharing code; what remote state and locking protect against; and how you would investigate failed initialization, permissions, drift, or an unexpected EC2 bill.
 
-Deploy Prod Environment
-cd environments/prod
-terraform init
-terraform plan
-terraform apply
-
-🔒 Remote State & Locking
-
-S3 stores the Terraform state file
-
-DynamoDB provides state locking
-
-Prevents multiple users or pipelines from running terraform apply at the same time
-
-This setup mirrors real-world, team-based Terraform workflows.
-
-📚 Skills Demonstrated
-
-Terraform core concepts
-
-Remote state management
-
-State locking with DynamoDB
-
-Terraform modules
-
-Multi-environment infrastructure
-
-AWS EC2 provisioning
-
-Infrastructure as Code best practices
-
-📝 Notes
-
-Terraform commands should be run only from environment folders
-
-terraform.tfvars files are excluded from version control
-
-This project is intended for learning and demonstration purposes
-
-
+**Related skills:** AWS EC2 · Terraform HCL · modules · S3 backends · DynamoDB locking · environment isolation · infrastructure troubleshooting
